@@ -1,133 +1,182 @@
-"use client"
-import { useState, useMemo } from "react"
-import { adsData } from "@/lib/mock-data"
-import { filterAds, formatCurrency, formatNumber, formatDecimal } from "@/lib/utils"
-import { Filters } from "@/lib/types"
-import FilterBar from "@/components/FilterBar"
-import KpiCard from "@/components/KpiCard"
-import { Megaphone, DollarSign, ShoppingCart, Package, MousePointerClick, BarChart3, ArrowUpDown } from "lucide-react"
-
-type SortKey = "date" | "store" | "platform" | "isku" | "campaignName" | "adsSpend" | "adsSales" | "ordersAds" | "unitsSoldAds" | "ctr" | "cpc" | "cpm" | "roas"
+"use client";
+import { useEffect, useState, useMemo } from "react";
+import { supabase } from "@/lib/supabase";
+import { AdsRecord } from "@/lib/types";
+import { Search } from "lucide-react";
 
 export default function AdsPage() {
-  const [filters, setFilters] = useState<Filters>({ datePreset: "last30d", startDate: "", endDate: "", platform: "", store: "", search: "" })
-  const [sortKey, setSortKey] = useState<SortKey>("date")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
-  const [page, setPage] = useState(0)
-  const perPage = 25
+  const [ads, setAds] = useState<AdsRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [platform, setPlatform] = useState("All");
+  const [store, setStore] = useState("All");
+  const [dateRange, setDateRange] = useState("all");
+  const [page, setPage] = useState(1);
+  const perPage = 50;
 
-  const filtered = useMemo(() => filterAds(adsData, filters), [filters])
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const av = a[sortKey], bv = b[sortKey]
-      const cmp = typeof av === "number" ? (av as number) - (bv as number) : String(av).localeCompare(String(bv))
-      return sortDir === "asc" ? cmp : -cmp
-    })
-  }, [filtered, sortKey, sortDir])
+  useEffect(() => {
+    async function fetchAds() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("ads_performance")
+        .select("*")
+        .order("date", { ascending: false });
+      if (!error && data) setAds(data);
+      setLoading(false);
+    }
+    fetchAds();
+  }, []);
 
-  const totalPages = Math.ceil(sorted.length / perPage)
-  const pageData = sorted.slice(page * perPage, (page + 1) * perPage)
+  const platforms = useMemo(() => ["All", ...new Set(ads.map((a) => a.platform))], [ads]);
+  const stores = useMemo(() => {
+    const filtered = platform === "All" ? ads : ads.filter((a) => a.platform === platform);
+    return ["All", ...new Set(filtered.map((a) => a.store))];
+  }, [ads, platform]);
 
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) setSortDir(sortDir === "asc" ? "desc" : "asc")
-    else { setSortKey(key); setSortDir("desc") }
-    setPage(0)
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    let result = ads;
+
+    if (dateRange !== "all") {
+      const now = new Date();
+      let cutoff = new Date();
+      if (dateRange === "today") cutoff.setHours(0, 0, 0, 0);
+      else if (dateRange === "7d") cutoff.setDate(now.getDate() - 7);
+      else if (dateRange === "30d") cutoff.setDate(now.getDate() - 30);
+      result = result.filter((r) => {
+        try {
+          const parts = r.date.split(" ")[0].split("/");
+          const d = new Date(Number(parts[2]), Number(parts[0]) - 1, Number(parts[1]));
+          return d >= cutoff;
+        } catch { return true; }
+      });
+    }
+
+    if (platform !== "All") result = result.filter((r) => r.platform === platform);
+    if (store !== "All") result = result.filter((r) => r.store === store);
+    if (q) result = result.filter((r) =>
+      r.sku.toLowerCase().includes(q) || r.campaign_name.toLowerCase().includes(q)
+    );
+    return result;
+  }, [ads, search, platform, store, dateRange]);
+
+  const totalPages = Math.ceil(filtered.length / perPage);
+  const paginated = filtered.slice((page - 1) * perPage, page * perPage);
+
+  const totalSpend = filtered.reduce((s, r) => s + Number(r.ads_spend), 0);
+  const totalAdsSales = filtered.reduce((s, r) => s + Number(r.ads_sales), 0);
+  const overallRoas = totalSpend > 0 ? totalAdsSales / totalSpend : 0;
+
+  const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full py-40">
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+        <span className="ml-3 text-gray-500 text-lg">Loading ads data...</span>
+      </div>
+    );
   }
 
-  const totalSpend = filtered.reduce((s, r) => s + r.adsSpend, 0)
-  const totalAdsSales = filtered.reduce((s, r) => s + r.adsSales, 0)
-  const totalAdsOrders = filtered.reduce((s, r) => s + r.ordersAds, 0)
-  const totalAdsUnits = filtered.reduce((s, r) => s + r.unitsSoldAds, 0)
-  const totalClicks = filtered.reduce((s, r) => s + r.clicks, 0)
-  const totalImpressions = filtered.reduce((s, r) => s + r.impressions, 0)
-  const avgCtr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0
-  const overallRoas = totalSpend > 0 ? totalAdsSales / totalSpend : 0
-
-  const SortHeader = ({ label, k }: { label: string; k: SortKey }) => (
-    <th className="table-header py-3 px-2 cursor-pointer select-none whitespace-nowrap" onClick={() => toggleSort(k)}>
-      <div className={`flex items-center gap-1 ${typeof adsData[0]?.[k] === "number" ? "justify-end" : ""}`}>
-        {label}<ArrowUpDown className="w-3 h-3 text-gray-300" />
-      </div>
-    </th>
-  )
-
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Ads Performance</h1>
-        <p className="text-sm text-gray-500 mt-1">Track advertising spend and returns across all campaigns</p>
+        <p className="text-sm text-gray-500 mt-1">
+          {filtered.length.toLocaleString()} records — Spend: {fmt(totalSpend)} · Ads Sales: {fmt(totalAdsSales)} · ROAS: {overallRoas.toFixed(2)}x
+        </p>
       </div>
 
-      <FilterBar filters={filters} onChange={(f) => { setFilters(f); setPage(0) }} />
-
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <KpiCard title="Ads Spend" value={formatCurrency(totalSpend)} icon={Megaphone} color="red" />
-        <KpiCard title="Ads Sales" value={formatCurrency(totalAdsSales)} icon={DollarSign} color="green" />
-        <KpiCard title="Ads Orders" value={formatNumber(totalAdsOrders)} icon={ShoppingCart} color="blue" />
-        <KpiCard title="Ads Units" value={formatNumber(totalAdsUnits)} icon={Package} color="purple" />
-        <KpiCard title="Avg CTR" value={avgCtr.toFixed(2) + "%"} icon={MousePointerClick} color="cyan" />
-        <KpiCard title="ROAS" value={formatDecimal(overallRoas) + "x"} icon={BarChart3} color="orange" />
-      </div>
-
-      <div className="card">
-        <div className="card-header flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-700">Ads Records</h3>
-          <span className="text-xs text-gray-400">{formatNumber(sorted.length)} records</span>
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <select value={dateRange} onChange={(e) => { setDateRange(e.target.value); setPage(1); }}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+          <option value="all">All Time</option>
+          <option value="today">Today</option>
+          <option value="7d">Last 7 Days</option>
+          <option value="30d">Last 30 Days</option>
+        </select>
+        <select value={platform} onChange={(e) => { setPlatform(e.target.value); setStore("All"); setPage(1); }}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+          {platforms.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select value={store} onChange={(e) => { setStore(e.target.value); setPage(1); }}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+          {stores.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <div className="relative flex-1 max-w-xs">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input type="text" placeholder="Search iSKU or campaign..."
+            value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            className="w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <SortHeader label="Date" k="date" />
-                <SortHeader label="Store" k="store" />
-                <SortHeader label="Platform" k="platform" />
-                <SortHeader label="iSKU" k="isku" />
-                <SortHeader label="Campaign" k="campaignName" />
-                <SortHeader label="Spend" k="adsSpend" />
-                <SortHeader label="Sales" k="adsSales" />
-                <SortHeader label="Orders" k="ordersAds" />
-                <SortHeader label="Units" k="unitsSoldAds" />
-                <SortHeader label="CTR" k="ctr" />
-                <SortHeader label="CPC" k="cpc" />
-                <SortHeader label="CPM" k="cpm" />
-                <SortHeader label="ROAS" k="roas" />
-              </tr>
-            </thead>
-            <tbody>
-              {pageData.map((r, i) => (
-                <tr key={`${r.date}-${r.store}-${r.isku}-${i}`} className="border-b border-gray-50 hover:bg-gray-50">
-                  <td className="py-2.5 px-2 text-xs text-gray-600">{r.date}</td>
-                  <td className="py-2.5 px-2 text-xs">{r.store}</td>
-                  <td className="py-2.5 px-2"><span className="badge bg-gray-100 text-gray-700">{r.platform}</span></td>
-                  <td className="py-2.5 px-2 font-mono text-xs font-medium text-brand-600">{r.isku}</td>
-                  <td className="py-2.5 px-2 text-xs max-w-[200px] truncate">{r.campaignName}</td>
-                  <td className="py-2.5 px-2 text-right text-xs">{formatCurrency(r.adsSpend)}</td>
-                  <td className="py-2.5 px-2 text-right text-xs">{formatCurrency(r.adsSales)}</td>
-                  <td className="py-2.5 px-2 text-right text-xs">{r.ordersAds}</td>
-                  <td className="py-2.5 px-2 text-right text-xs">{r.unitsSoldAds}</td>
-                  <td className="py-2.5 px-2 text-right text-xs">{r.ctr}%</td>
-                  <td className="py-2.5 px-2 text-right text-xs">${r.cpc}</td>
-                  <td className="py-2.5 px-2 text-right text-xs">${r.cpm}</td>
-                  <td className="py-2.5 px-2 text-right">
-                    <span className={`font-semibold text-xs ${r.roas >= 3 ? "text-green-600" : r.roas >= 1 ? "text-yellow-600" : "text-red-600"}`}>
-                      {r.roas.toFixed(2)}x
-                    </span>
-                  </td>
+      </div>
+
+      {/* Table */}
+      {ads.length === 0 ? (
+        <div className="bg-white rounded-xl border p-12 text-center">
+          <p className="text-gray-500 text-lg">No ads data yet</p>
+          <p className="text-gray-400 text-sm mt-2">Ads performance data will appear here once imported into the ads_performance table in Supabase.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  {["Date", "Store", "Platform", "iSKU", "Campaign", "Ads Spend", "Ads Sales", "Orders", "Units", "CTR", "CPC", "CPM", "ROAS"].map((h) => (
+                    <th key={h} className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {totalPages > 1 && (
-          <div className="card-body border-t border-gray-100 flex items-center justify-between">
-            <span className="text-xs text-gray-500">Page {page + 1} of {totalPages}</span>
-            <div className="flex gap-2">
-              <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="btn-primary text-xs disabled:opacity-40">Previous</button>
-              <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="btn-primary text-xs disabled:opacity-40">Next</button>
-            </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {paginated.map((r) => (
+                  <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-3 py-2.5 text-xs text-gray-500 whitespace-nowrap">{r.date}</td>
+                    <td className="px-3 py-2.5 text-sm text-gray-700">{r.store}</td>
+                    <td className="px-3 py-2.5 text-sm">
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                        r.platform === "Shopee" ? "bg-orange-50 text-orange-700" :
+                        r.platform === "TikTok Shop" ? "bg-gray-900 text-white" :
+                        "bg-blue-50 text-blue-700"
+                      }`}>{r.platform}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-sm font-mono font-medium text-gray-900">{r.sku}</td>
+                    <td className="px-3 py-2.5 text-sm text-gray-600 max-w-[150px] truncate">{r.campaign_name}</td>
+                    <td className="px-3 py-2.5 text-sm text-red-600 text-right">{fmt(Number(r.ads_spend))}</td>
+                    <td className="px-3 py-2.5 text-sm text-green-600 text-right">{fmt(Number(r.ads_sales))}</td>
+                    <td className="px-3 py-2.5 text-sm text-gray-600 text-right">{Number(r.orders_ads)}</td>
+                    <td className="px-3 py-2.5 text-sm text-gray-600 text-right">{Number(r.units_sold_ads)}</td>
+                    <td className="px-3 py-2.5 text-sm text-gray-600 text-right">{Number(r.ctr).toFixed(2)}%</td>
+                    <td className="px-3 py-2.5 text-sm text-gray-600 text-right">{fmt(Number(r.cpc))}</td>
+                    <td className="px-3 py-2.5 text-sm text-gray-600 text-right">{fmt(Number(r.cpm))}</td>
+                    <td className="px-3 py-2.5 text-sm font-medium text-right">
+                      <span className={Number(r.roas) >= 3 ? "text-green-600" : Number(r.roas) >= 1 ? "text-yellow-600" : "text-red-600"}>
+                        {Number(r.roas).toFixed(2)}x
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
+              <p className="text-sm text-gray-500">
+                Showing {(page - 1) * perPage + 1}–{Math.min(page * perPage, filtered.length)} of {filtered.length.toLocaleString()}
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
+                  className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Previous</button>
+                <span className="px-3 py-1.5 text-sm text-gray-600">Page {page} of {totalPages}</span>
+                <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages}
+                  className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Next</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
-  )
+  );
 }

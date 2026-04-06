@@ -1,110 +1,184 @@
-"use client"
-import { useState, useMemo } from "react"
-import { salesData } from "@/lib/mock-data"
-import { filterSales, formatCurrency, formatNumber } from "@/lib/utils"
-import { Filters } from "@/lib/types"
-import FilterBar from "@/components/FilterBar"
-import { ArrowUpDown } from "lucide-react"
-
-type SortKey = "date" | "store" | "platform" | "isku" | "productName" | "orders" | "unitsSold" | "revenue"
+"use client";
+import { useEffect, useState, useMemo } from "react";
+import { supabase } from "@/lib/supabase";
+import { SalesRecord } from "@/lib/types";
+import { Search, Download } from "lucide-react";
 
 export default function SalesPage() {
-  const [filters, setFilters] = useState<Filters>({ datePreset: "last30d", startDate: "", endDate: "", platform: "", store: "", search: "" })
-  const [sortKey, setSortKey] = useState<SortKey>("date")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
-  const [page, setPage] = useState(0)
-  const perPage = 25
+  const [sales, setSales] = useState<SalesRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [platform, setPlatform] = useState("All");
+  const [store, setStore] = useState("All");
+  const [dateRange, setDateRange] = useState("all");
+  const [page, setPage] = useState(1);
+  const perPage = 50;
 
-  const filtered = useMemo(() => filterSales(salesData, filters), [filters])
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const av = a[sortKey], bv = b[sortKey]
-      const cmp = typeof av === "number" ? (av as number) - (bv as number) : String(av).localeCompare(String(bv))
-      return sortDir === "asc" ? cmp : -cmp
-    })
-  }, [filtered, sortKey, sortDir])
+  useEffect(() => {
+    async function fetchSales() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("sales_tracking")
+        .select("*")
+        .order("date", { ascending: false });
+      if (!error && data) setSales(data);
+      setLoading(false);
+    }
+    fetchSales();
+  }, []);
 
-  const totalPages = Math.ceil(sorted.length / perPage)
-  const pageData = sorted.slice(page * perPage, (page + 1) * perPage)
+  const platforms = useMemo(() => ["All", ...new Set(sales.map((s) => s.platform))], [sales]);
+  const stores = useMemo(() => {
+    const filtered = platform === "All" ? sales : sales.filter((s) => s.platform === platform);
+    return ["All", ...new Set(filtered.map((s) => s.store_name))];
+  }, [sales, platform]);
 
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) setSortDir(sortDir === "asc" ? "desc" : "asc")
-    else { setSortKey(key); setSortDir("desc") }
-    setPage(0)
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    let result = sales;
+
+    // Date filter
+    if (dateRange !== "all") {
+      const now = new Date();
+      let cutoff = new Date();
+      if (dateRange === "today") cutoff.setHours(0, 0, 0, 0);
+      else if (dateRange === "7d") cutoff.setDate(now.getDate() - 7);
+      else if (dateRange === "30d") cutoff.setDate(now.getDate() - 30);
+
+      result = result.filter((r) => {
+        try {
+          const parts = r.date.split(" ")[0].split("/");
+          const d = new Date(Number(parts[2]), Number(parts[0]) - 1, Number(parts[1]));
+          return d >= cutoff;
+        } catch { return true; }
+      });
+    }
+
+    if (platform !== "All") result = result.filter((r) => r.platform === platform);
+    if (store !== "All") result = result.filter((r) => r.store_name === store);
+    if (q) result = result.filter((r) =>
+      r.sku.toLowerCase().includes(q) || r.product_name.toLowerCase().includes(q)
+    );
+    return result;
+  }, [sales, search, platform, store, dateRange]);
+
+  const totalPages = Math.ceil(filtered.length / perPage);
+  const paginated = filtered.slice((page - 1) * perPage, page * perPage);
+
+  const totalRevenue = filtered.reduce((s, r) => s + Number(r.revenue), 0);
+  const totalUnits = filtered.reduce((s, r) => s + Number(r.units_sold), 0);
+  const totalOrders = filtered.reduce((s, r) => s + Number(r.orders), 0);
+
+  const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full py-40">
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+        <span className="ml-3 text-gray-500 text-lg">Loading sales data...</span>
+      </div>
+    );
   }
 
-  const totalRevenue = filtered.reduce((s, r) => s + r.revenue, 0)
-  const totalOrders = filtered.reduce((s, r) => s + r.orders, 0)
-  const totalUnits = filtered.reduce((s, r) => s + r.unitsSold, 0)
-
-  const SortHeader = ({ label, k }: { label: string; k: SortKey }) => (
-    <th className="table-header py-3 px-2 cursor-pointer select-none" onClick={() => toggleSort(k)}>
-      <div className={`flex items-center gap-1 ${typeof salesData[0]?.[k] === "number" ? "justify-end" : ""}`}>
-        {label}<ArrowUpDown className="w-3 h-3 text-gray-300" />
-      </div>
-    </th>
-  )
-
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Sales</h1>
-        <p className="text-sm text-gray-500 mt-1">Detailed sales records across all stores and platforms</p>
-      </div>
-
-      <FilterBar filters={filters} onChange={(f) => { setFilters(f); setPage(0) }} />
-
-      <div className="grid grid-cols-3 gap-4">
-        <div className="card card-body"><p className="text-xs font-medium text-gray-500">Filtered Revenue</p><p className="text-xl font-bold mt-1">{formatCurrency(totalRevenue)}</p></div>
-        <div className="card card-body"><p className="text-xs font-medium text-gray-500">Filtered Orders</p><p className="text-xl font-bold mt-1">{formatNumber(totalOrders)}</p></div>
-        <div className="card card-body"><p className="text-xs font-medium text-gray-500">Filtered Units</p><p className="text-xl font-bold mt-1">{formatNumber(totalUnits)}</p></div>
-      </div>
-
-      <div className="card">
-        <div className="card-header flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-700">Sales Records</h3>
-          <span className="text-xs text-gray-400">{formatNumber(sorted.length)} records</span>
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Sales</h1>
+          <p className="text-sm text-gray-500 mt-1">{filtered.length.toLocaleString()} records — Revenue: {fmt(totalRevenue)} · Units: {totalUnits.toLocaleString()} · Orders: {totalOrders.toLocaleString()}</p>
         </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <select
+          value={dateRange}
+          onChange={(e) => { setDateRange(e.target.value); setPage(1); }}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+        >
+          <option value="all">All Time</option>
+          <option value="today">Today</option>
+          <option value="7d">Last 7 Days</option>
+          <option value="30d">Last 30 Days</option>
+        </select>
+        <select
+          value={platform}
+          onChange={(e) => { setPlatform(e.target.value); setStore("All"); setPage(1); }}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+        >
+          {platforms.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select
+          value={store}
+          onChange={(e) => { setStore(e.target.value); setPage(1); }}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+        >
+          {stores.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <div className="relative flex-1 max-w-xs">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search iSKU or product..."
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            className="w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-xl border overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <SortHeader label="Date" k="date" />
-                <SortHeader label="Store" k="store" />
-                <SortHeader label="Platform" k="platform" />
-                <SortHeader label="iSKU" k="isku" />
-                <SortHeader label="Product Name" k="productName" />
-                <SortHeader label="Orders" k="orders" />
-                <SortHeader label="Units Sold" k="unitsSold" />
-                <SortHeader label="Revenue" k="revenue" />
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b">
+              <tr>
+                {["Date", "Store", "Platform", "iSKU", "Product Name", "Orders", "Units Sold", "Revenue", "Discounts", "Net Sales"].map((h) => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">{h}</th>
+                ))}
               </tr>
             </thead>
-            <tbody>
-              {pageData.map((r, i) => (
-                <tr key={`${r.date}-${r.store}-${r.isku}-${i}`} className="border-b border-gray-50 hover:bg-gray-50">
-                  <td className="py-2.5 px-2 text-xs text-gray-600">{r.date}</td>
-                  <td className="py-2.5 px-2 text-xs">{r.store}</td>
-                  <td className="py-2.5 px-2"><span className="badge bg-gray-100 text-gray-700">{r.platform}</span></td>
-                  <td className="py-2.5 px-2 font-mono text-xs font-medium text-brand-600">{r.isku}</td>
-                  <td className="py-2.5 px-2 text-xs">{r.productName}</td>
-                  <td className="py-2.5 px-2 text-right">{r.orders}</td>
-                  <td className="py-2.5 px-2 text-right">{r.unitsSold}</td>
-                  <td className="py-2.5 px-2 text-right font-medium">{formatCurrency(r.revenue)}</td>
+            <tbody className="divide-y divide-gray-100">
+              {paginated.map((r) => (
+                <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-4 py-2.5 text-xs text-gray-500 whitespace-nowrap">{r.date}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-700">{r.store_name}</td>
+                  <td className="px-4 py-2.5 text-sm">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      r.platform === "Shopee" ? "bg-orange-50 text-orange-700" :
+                      r.platform === "Shopee SG" ? "bg-orange-50 text-orange-600" :
+                      r.platform === "TikTok Shop" ? "bg-gray-900 text-white" :
+                      "bg-blue-50 text-blue-700"
+                    }`}>{r.platform}</span>
+                  </td>
+                  <td className="px-4 py-2.5 text-sm font-mono font-medium text-gray-900">{r.sku}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 max-w-[200px] truncate">{r.product_name}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{Number(r.orders)}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{Number(r.units_sold)}</td>
+                  <td className="px-4 py-2.5 text-sm font-medium text-gray-900 text-right">{fmt(Number(r.revenue))}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(Number(r.discounts))}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(Number(r.net_sales))}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+
         {totalPages > 1 && (
-          <div className="card-body border-t border-gray-100 flex items-center justify-between">
-            <span className="text-xs text-gray-500">Page {page + 1} of {totalPages}</span>
+          <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
+            <p className="text-sm text-gray-500">
+              Showing {(page - 1) * perPage + 1}–{Math.min(page * perPage, filtered.length)} of {filtered.length.toLocaleString()}
+            </p>
             <div className="flex gap-2">
-              <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="btn-primary text-xs disabled:opacity-40">Previous</button>
-              <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="btn-primary text-xs disabled:opacity-40">Next</button>
+              <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
+                className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Previous</button>
+              <span className="px-3 py-1.5 text-sm text-gray-600">Page {page} of {totalPages}</span>
+              <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages}
+                className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Next</button>
             </div>
           </div>
         )}
       </div>
     </div>
-  )
+  );
 }

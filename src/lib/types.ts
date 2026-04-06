@@ -1,51 +1,47 @@
-export interface MasterSku {
-  isku: string
-  productName: string
-  cost: number
-  sellingPrice: number
-  margin: number // (sellingPrice - cost) / sellingPrice
+export interface SkuMaster {
+  id: number;
+  sku_code: string;
+  product_name: string;
+  category: string | null;
+  brand: string | null;
+  cost: number;
+  selling_price: number;
+  margin: number;
+  created_at: string;
 }
 
 export interface SalesRecord {
-  date: string
-  store: string
-  platform: string
-  isku: string
-  productName: string
-  orders: number
-  unitsSold: number
-  revenue: number
-  discount: number
-  netSales: number // revenue - discount
+  id: number;
+  date: string;
+  store_name: string;
+  platform: string;
+  sku: string;
+  product_name: string;
+  orders: number;
+  units_sold: number;
+  revenue: number;
+  discounts: number;
+  net_sales: number;
+  order_status: string | null;
+  order_id: number | null;
+  created_at: string;
 }
 
 export interface AdsRecord {
-  date: string
-  store: string
-  platform: string
-  isku: string
-  productName: string
-  campaignName: string
-  adsSpend: number
-  adsSales: number
-  ordersAds: number
-  unitsSoldAds: number
-  impressions: number
-  clicks: number
-  ctr: number
-  cpc: number
-  cpm: number
-  roas: number // adsSales / adsSpend
-}
-
-export type Platform = "Shopee" | "Shopee SG" | "Lazada" | "TikTok Shop"
-export type DatePreset = "today" | "yesterday" | "last7d" | "last30d" | "custom"
-
-export interface Filters {
-  datePreset: DatePreset
-  startDate: string
-  endDate: string
-  platform: string
-  store: string
-  search: string
+  id: number;
+  date: string;
+  store: string;
+  platform: string;
+  sku: string;
+  campaign_name: string;
+  ads_spend: number;
+  ads_sales: number;
+  orders_ads: number;
+  units_sold_ads: number;
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  roas: number;
+  cpa: number;
+  created_at: string;
 }
