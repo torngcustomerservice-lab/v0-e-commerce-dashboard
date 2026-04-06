@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import { SalesRecord } from "@/lib/types";
-import { Search, Download } from "lucide-react";
+import { Search } from "lucide-react";
 
 export default function SalesPage() {
   const [sales, setSales] = useState<SalesRecord[]>([]);
@@ -11,36 +11,51 @@ export default function SalesPage() {
   const [platform, setPlatform] = useState("All");
   const [store, setStore] = useState("All");
   const [dateRange, setDateRange] = useState("all");
-  const [page, setPage] = useState(1);
-  const perPage = 50;
 
   useEffect(() => {
-    async function fetchSales() {
+    async function fetchAllSales() {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("sales_tracking")
-        .select("*")
-        .order("date", { ascending: false });
-      if (!error && data) setSales(data);
+      // Supabase defaults to 1000 rows — fetch in batches to get all records
+      const pageSize = 1000;
+      let allData: SalesRecord[] = [];
+      let from = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from("sales_tracking")
+          .select("*")
+          .order("date", { ascending: false })
+          .range(from, from + pageSize - 1);
+
+        if (error || !data) break;
+        allData = allData.concat(data);
+        if (data.length < pageSize) {
+          hasMore = false;
+        } else {
+          from += pageSize;
+        }
+      }
+
+      setSales(allData);
       setLoading(false);
     }
-    fetchSales();
+    fetchAllSales();
   }, []);
 
   const platforms = useMemo(() => ["All", ...Array.from(new Set(sales.map((s) => s.platform)))], [sales]);
   const stores = useMemo(() => {
-    const filtered = platform === "All" ? sales : sales.filter((s) => s.platform === platform);
-    return ["All", ...Array.from(new Set(filtered.map((s) => s.store_name)))];
+    const f = platform === "All" ? sales : sales.filter((s) => s.platform === platform);
+    return ["All", ...Array.from(new Set(f.map((s) => s.store_name)))];
   }, [sales, platform]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     let result = sales;
 
-    // Date filter
     if (dateRange !== "all") {
       const now = new Date();
-      let cutoff = new Date();
+      const cutoff = new Date();
       if (dateRange === "today") cutoff.setHours(0, 0, 0, 0);
       else if (dateRange === "7d") cutoff.setDate(now.getDate() - 7);
       else if (dateRange === "30d") cutoff.setDate(now.getDate() - 30);
@@ -61,9 +76,6 @@ export default function SalesPage() {
     );
     return result;
   }, [sales, search, platform, store, dateRange]);
-
-  const totalPages = Math.ceil(filtered.length / perPage);
-  const paginated = filtered.slice((page - 1) * perPage, page * perPage);
 
   const totalRevenue = filtered.reduce((s, r) => s + Number(r.revenue), 0);
   const totalUnits = filtered.reduce((s, r) => s + Number(r.units_sold), 0);
@@ -93,7 +105,7 @@ export default function SalesPage() {
       <div className="flex flex-wrap gap-3 items-center">
         <select
           value={dateRange}
-          onChange={(e) => { setDateRange(e.target.value); setPage(1); }}
+          onChange={(e) => setDateRange(e.target.value)}
           className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
         >
           <option value="all">All Time</option>
@@ -103,14 +115,14 @@ export default function SalesPage() {
         </select>
         <select
           value={platform}
-          onChange={(e) => { setPlatform(e.target.value); setStore("All"); setPage(1); }}
+          onChange={(e) => { setPlatform(e.target.value); setStore("All"); }}
           className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
         >
           {platforms.map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
         <select
           value={store}
-          onChange={(e) => { setStore(e.target.value); setPage(1); }}
+          onChange={(e) => setStore(e.target.value)}
           className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
         >
           {stores.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -121,26 +133,27 @@ export default function SalesPage() {
             type="text"
             placeholder="Search iSKU or product..."
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
           />
         </div>
       </div>
 
-      {/* Table */}
+      {/* Table — All records, no pagination */}
       <div className="bg-white rounded-xl border overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
           <table className="w-full">
-            <thead className="bg-gray-50 border-b">
+            <thead className="bg-gray-50 border-b sticky top-0 z-10">
               <tr>
-                {["Date", "Store", "Platform", "iSKU", "Product Name", "Orders", "Units Sold", "Revenue", "Discounts", "Net Sales"].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">{h}</th>
+                {["#", "Date", "Store", "Platform", "iSKU", "Product Name", "Orders", "Units Sold", "Revenue", "Discounts", "Net Sales"].map((h) => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap bg-gray-50">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {paginated.map((r) => (
+              {filtered.map((r, i) => (
                 <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-4 py-2.5 text-xs text-gray-400">{i + 1}</td>
                   <td className="px-4 py-2.5 text-xs text-gray-500 whitespace-nowrap">{r.date}</td>
                   <td className="px-4 py-2.5 text-sm text-gray-700">{r.store_name}</td>
                   <td className="px-4 py-2.5 text-sm">
@@ -164,20 +177,12 @@ export default function SalesPage() {
           </table>
         </div>
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
-            <p className="text-sm text-gray-500">
-              Showing {(page - 1) * perPage + 1}–{Math.min(page * perPage, filtered.length)} of {filtered.length.toLocaleString()}
-            </p>
-            <div className="flex gap-2">
-              <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
-                className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Previous</button>
-              <span className="px-3 py-1.5 text-sm text-gray-600">Page {page} of {totalPages}</span>
-              <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages}
-                className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Next</button>
-            </div>
-          </div>
-        )}
+        {/* Footer summary */}
+        <div className="flex items-center px-4 py-3 border-t bg-gray-50">
+          <p className="text-sm text-gray-500">
+            Showing all {filtered.length.toLocaleString()} records
+          </p>
+        </div>
       </div>
     </div>
   );

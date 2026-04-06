@@ -15,20 +15,36 @@ export default function SkuMasterPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [sortKey, setSortKey] = useState<SortKey>("sku_code");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
-  const [page, setPage] = useState(1);
-  const perPage = 50;
 
   useEffect(() => {
-    async function fetchSkus() {
+    async function fetchAllSkus() {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("sku_master")
-        .select("*")
-        .order("sku_code", { ascending: true });
-      if (!error && data) setSkus(data);
+      // Supabase defaults to 1000 rows — fetch in batches to get all records
+      const pageSize = 1000;
+      let allData: SkuMaster[] = [];
+      let from = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from("sku_master")
+          .select("*")
+          .order("sku_code", { ascending: true })
+          .range(from, from + pageSize - 1);
+
+        if (error || !data) break;
+        allData = allData.concat(data);
+        if (data.length < pageSize) {
+          hasMore = false;
+        } else {
+          from += pageSize;
+        }
+      }
+
+      setSkus(allData);
       setLoading(false);
     }
-    fetchSkus();
+    fetchAllSkus();
   }, []);
 
   const isActive = (s: SkuMaster) => Number(s.cost) > 0 && Number(s.selling_price) > 0;
@@ -37,11 +53,9 @@ export default function SkuMasterPage() {
     const q = search.toLowerCase();
     let result = skus;
 
-    // Status filter
     if (statusFilter === "active") result = result.filter((s) => isActive(s));
     else if (statusFilter === "non-active") result = result.filter((s) => !isActive(s));
 
-    // Search filter
     if (q) {
       result = result.filter(
         (s) =>
@@ -63,9 +77,6 @@ export default function SkuMasterPage() {
     return result;
   }, [skus, search, statusFilter, sortKey, sortDir]);
 
-  const totalPages = Math.ceil(filtered.length / perPage);
-  const paginated = filtered.slice((page - 1) * perPage, page * perPage);
-
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -73,14 +84,13 @@ export default function SkuMasterPage() {
       setSortKey(key);
       setSortDir("asc");
     }
-    setPage(1);
   };
 
   const fmt = (n: number) => n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const SortHeader = ({ label, field }: { label: string; field: SortKey }) => (
     <th
-      className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase cursor-pointer hover:text-gray-700 select-none"
+      className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase cursor-pointer hover:text-gray-700 select-none bg-gray-50"
       onClick={() => handleSort(field)}
     >
       <div className="flex items-center gap-1">
@@ -150,7 +160,6 @@ export default function SkuMasterPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">
-        {/* Status filter tabs */}
         <div className="flex bg-gray-100 rounded-lg p-1">
           {([
             { value: "active", label: "Active", count: totalActive },
@@ -159,7 +168,7 @@ export default function SkuMasterPage() {
           ] as { value: StatusFilter; label: string; count: number }[]).map((tab) => (
             <button
               key={tab.value}
-              onClick={() => { setStatusFilter(tab.value); setPage(1); }}
+              onClick={() => setStatusFilter(tab.value)}
               className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
                 statusFilter === tab.value
                   ? "bg-white text-gray-900 shadow-sm"
@@ -171,20 +180,19 @@ export default function SkuMasterPage() {
           ))}
         </div>
 
-        {/* Search */}
         <div className="relative flex-1 max-w-md">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
             placeholder="Search by iSKU, product name, category, or brand..."
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
           />
         </div>
       </div>
 
-      {/* Table */}
+      {/* Table — All records, no pagination */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -192,12 +200,12 @@ export default function SkuMasterPage() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 border-b">
+              <thead className="bg-gray-50 border-b sticky top-0 z-10">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase w-10">#</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase w-16">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase w-10 bg-gray-50">#</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase w-16 bg-gray-50">Status</th>
                   <SortHeader label="iSKU" field="sku_code" />
                   <SortHeader label="Product Name" field="product_name" />
                   <SortHeader label="Cost" field="cost" />
@@ -206,7 +214,7 @@ export default function SkuMasterPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {paginated.map((sku, i) => {
+                {filtered.map((sku, i) => {
                   const active = isActive(sku);
                   const marginVal = Number(sku.margin);
                   const marginColor =
@@ -219,7 +227,7 @@ export default function SkuMasterPage() {
                       : "text-gray-400 bg-gray-50";
                   return (
                     <tr key={sku.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 text-xs text-gray-400">{(page - 1) * perPage + i + 1}</td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{i + 1}</td>
                       <td className="px-4 py-3">
                         {active ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">
@@ -247,33 +255,12 @@ export default function SkuMasterPage() {
             </table>
           </div>
 
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
-              <p className="text-sm text-gray-500">
-                Showing {(page - 1) * perPage + 1}–{Math.min(page * perPage, filtered.length)} of {filtered.length.toLocaleString()}
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setPage(Math.max(1, page - 1))}
-                  disabled={page === 1}
-                  className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white transition-colors"
-                >
-                  Previous
-                </button>
-                <span className="px-3 py-1.5 text-sm text-gray-600">
-                  Page {page} of {totalPages}
-                </span>
-                <button
-                  onClick={() => setPage(Math.min(totalPages, page + 1))}
-                  disabled={page === totalPages}
-                  className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white transition-colors"
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          )}
+          {/* Footer summary */}
+          <div className="flex items-center px-4 py-3 border-t bg-gray-50">
+            <p className="text-sm text-gray-500">
+              Showing all {filtered.length.toLocaleString()} records
+            </p>
+          </div>
         </div>
       )}
     </div>
