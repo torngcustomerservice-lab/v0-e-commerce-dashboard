@@ -118,12 +118,12 @@ export default function DashboardPage() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <KpiCard title="Total Sales" value={fmt(kpis.totalRevenue)} icon={<DollarSign size={20} />} color="blue" />
-        <KpiCard title="Total Orders" value={kpis.totalOrders.toLocaleString()} icon={<ShoppingCart size={20} />} color="green" />
-        <KpiCard title="Units Sold" value={kpis.totalUnits.toLocaleString()} icon={<Package size={20} />} color="purple" />
-        <KpiCard title="Ads Spend" value={fmt(kpis.totalAdsSpend)} icon={<Megaphone size={20} />} color="red" />
-        <KpiCard title="Ads Sales" value={fmt(kpis.totalAdsSales)} icon={<TrendingUp size={20} />} color="yellow" />
-        <KpiCard title="ROAS" value={kpis.roas.toFixed(2) + "x"} icon={<BarChart3 size={20} />} color="indigo" />
+        <KpiCard title="Total Sales" value={fmt(kpis.totalRevenue)} icon={DollarSign} color="blue" />
+        <KpiCard title="Total Orders" value={kpis.totalOrders.toLocaleString()} icon={ShoppingCart} color="green" />
+        <KpiCard title="Units Sold" value={kpis.totalUnits.toLocaleString()} icon={Package} color="purple" />
+        <KpiCard title="Ads Spend" value={fmt(kpis.totalAdsSpend)} icon={Megaphone} color="red" />
+        <KpiCard title="Ads Sales" value={fmt(kpis.totalAdsSales)} icon={TrendingUp} color="cyan" />
+        <KpiCard title="ROAS" value={kpis.roas.toFixed(2) + "x"} icon={BarChart3} color="orange" />
       </div>
 
       {/* Charts Row */}
