@@ -98,7 +98,7 @@ export default function DashboardPage() {
     return Object.values(map).sort((a, b) => b.revenue - a.revenue).slice(0, 20);
   }, [sales]);
 
-  const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   if (loading) {
     return (
@@ -128,7 +128,6 @@ export default function DashboardPage() {
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Daily Sales Trend */}
         <div className="bg-white rounded-xl border p-5">
           <h3 className="text-sm font-semibold text-gray-700 mb-4">Daily Sales Trend</h3>
           <ResponsiveContainer width="100%" height={280}>
@@ -142,7 +141,6 @@ export default function DashboardPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Orders by Platform */}
         <div className="bg-white rounded-xl border p-5">
           <h3 className="text-sm font-semibold text-gray-700 mb-4">Units Sold by Platform</h3>
           <ResponsiveContainer width="100%" height={280}>

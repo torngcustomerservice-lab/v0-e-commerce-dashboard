@@ -69,7 +69,7 @@ export default function SalesPage() {
   const totalUnits = filtered.reduce((s, r) => s + Number(r.units_sold), 0);
   const totalOrders = filtered.reduce((s, r) => s + Number(r.orders), 0);
 
-  const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   if (loading) {
     return (

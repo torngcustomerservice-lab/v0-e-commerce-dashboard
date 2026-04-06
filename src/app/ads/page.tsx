@@ -67,7 +67,7 @@ export default function AdsPage() {
   const totalAdsSales = filtered.reduce((s, r) => s + Number(r.ads_sales), 0);
   const overallRoas = totalSpend > 0 ? totalAdsSales / totalSpend : 0;
 
-  const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   if (loading) {
     return (

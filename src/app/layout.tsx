@@ -12,7 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className={inter.className}>
         <Sidebar />
-        <main className="ml-[var(--sidebar-width)] min-h-screen p-6">{children}</main>
+        <main className="ml-[240px] min-h-screen bg-gray-50">{children}</main>
       </body>
     </html>
   )
