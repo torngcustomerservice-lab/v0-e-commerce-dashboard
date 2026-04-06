@@ -27,10 +27,10 @@ export default function SalesPage() {
     fetchSales();
   }, []);
 
-  const platforms = useMemo(() => ["All", ...new Set(sales.map((s) => s.platform))], [sales]);
+  const platforms = useMemo(() => ["All", ...Array.from(new Set(sales.map((s) => s.platform)))], [sales]);
   const stores = useMemo(() => {
     const filtered = platform === "All" ? sales : sales.filter((s) => s.platform === platform);
-    return ["All", ...new Set(filtered.map((s) => s.store_name))];
+    return ["All", ...Array.from(new Set(filtered.map((s) => s.store_name)))];
   }, [sales, platform]);
 
   const filtered = useMemo(() => {

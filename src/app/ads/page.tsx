@@ -27,10 +27,10 @@ export default function AdsPage() {
     fetchAds();
   }, []);
 
-  const platforms = useMemo(() => ["All", ...new Set(ads.map((a) => a.platform))], [ads]);
+  const platforms = useMemo(() => ["All", ...Array.from(new Set(ads.map((a) => a.platform)))], [ads]);
   const stores = useMemo(() => {
     const filtered = platform === "All" ? ads : ads.filter((a) => a.platform === platform);
-    return ["All", ...new Set(filtered.map((a) => a.store))];
+    return ["All", ...Array.from(new Set(filtered.map((a) => a.store)))];
   }, [ads, platform]);
 
   const filtered = useMemo(() => {
