@@ -59,8 +59,8 @@ export default function DashboardPage() {
     async function load() {
       setLoading(true);
       const [s, a] = await Promise.all([fetchAll("sales_tracking"), fetchAll("ads_performance")]);
-      setSales(s as SalesRecord[]);
-      setAds(a as AdsRecord[]);
+      setSales(s as unknown as SalesRecord[]);
+      setAds(a as unknown as AdsRecord[]);
       setLoading(false);
     }
     load();

@@ -19,6 +19,18 @@ function yesterdayRange(): [Date, Date] {
   return [s, e];
 }
 
+interface SkuSummary {
+  sku: string;
+  product_name: string;
+  orders: number;
+  units_sold: number;
+  revenue: number;
+  discounts: number;
+  net_sales: number;
+  platforms: string[];
+  stores: string[];
+}
+
 export default function SalesPage() {
   const [sales, setSales] = useState<SalesRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -72,6 +84,7 @@ export default function SalesPage() {
     return true;
   }, [datePreset, customFrom, customTo]);
 
+  /* filtered raw records */
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     let result = sales;
@@ -84,10 +97,46 @@ export default function SalesPage() {
     return result;
   }, [sales, search, platform, store, dateFilter]);
 
-  const totalRevenue = filtered.reduce((s, r) => s + Number(r.revenue), 0);
-  const totalUnits = filtered.reduce((s, r) => s + Number(r.units_sold), 0);
-  const uniqueOrders = new Set(filtered.filter(r => r.order_id != null).map(r => String(r.order_id)));
-  const totalOrders = uniqueOrders.size;
+  /* group by SKU */
+  const skuSummaries = useMemo(() => {
+    const map: Record<string, {
+      sku: string; product_name: string; orderIds: Set<string>;
+      units_sold: number; revenue: number; discounts: number; net_sales: number;
+      platforms: Set<string>; stores: Set<string>;
+    }> = {};
+    filtered.forEach(r => {
+      if (!map[r.sku]) {
+        map[r.sku] = {
+          sku: r.sku, product_name: r.product_name, orderIds: new Set(),
+          units_sold: 0, revenue: 0, discounts: 0, net_sales: 0,
+          platforms: new Set(), stores: new Set(),
+        };
+      }
+      const entry = map[r.sku];
+      if (r.order_id != null) entry.orderIds.add(String(r.order_id));
+      entry.units_sold += Number(r.units_sold);
+      entry.revenue += Number(r.revenue);
+      entry.discounts += Number(r.discounts);
+      entry.net_sales += Number(r.net_sales);
+      entry.platforms.add(r.platform);
+      entry.stores.add(r.store_name);
+    });
+    return Object.values(map).map(e => ({
+      sku: e.sku,
+      product_name: e.product_name,
+      orders: e.orderIds.size,
+      units_sold: e.units_sold,
+      revenue: e.revenue,
+      discounts: e.discounts,
+      net_sales: e.net_sales,
+      platforms: Array.from(e.platforms),
+      stores: Array.from(e.stores),
+    } as SkuSummary)).sort((a, b) => b.revenue - a.revenue);
+  }, [filtered]);
+
+  const totalRevenue = skuSummaries.reduce((s, r) => s + r.revenue, 0);
+  const totalUnits = skuSummaries.reduce((s, r) => s + r.units_sold, 0);
+  const totalOrders = new Set(filtered.filter(r => r.order_id != null).map(r => String(r.order_id))).size;
 
   const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -104,9 +153,9 @@ export default function SalesPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Sales</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Sales by iSKU</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {filtered.length.toLocaleString()} records — Revenue: {fmt(totalRevenue)} · Units: {totalUnits.toLocaleString()} · Orders: {totalOrders.toLocaleString()}
+            {skuSummaries.length.toLocaleString()} SKUs — Revenue: {fmt(totalRevenue)} · Units: {totalUnits.toLocaleString()} · Orders: {totalOrders.toLocaleString()}
           </p>
         </div>
       </div>
@@ -147,46 +196,68 @@ export default function SalesPage() {
         </div>
       </div>
 
-      {/* Table — All records */}
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-xs font-medium text-gray-500 uppercase">Total SKUs</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{skuSummaries.length.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-xs font-medium text-gray-500 uppercase">Total Orders</p>
+          <p className="text-2xl font-bold text-green-600 mt-1">{totalOrders.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-xs font-medium text-gray-500 uppercase">Total Units Sold</p>
+          <p className="text-2xl font-bold text-purple-600 mt-1">{totalUnits.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-xs font-medium text-gray-500 uppercase">Total Revenue</p>
+          <p className="text-2xl font-bold text-blue-600 mt-1">{fmt(totalRevenue)}</p>
+        </div>
+      </div>
+
+      {/* Table — grouped by SKU */}
       <div className="bg-white rounded-xl border overflow-hidden">
         <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
           <table className="w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10">
               <tr>
-                {["#", "Date", "Store", "Platform", "iSKU", "Product Name", "Order ID", "Orders", "Units Sold", "Revenue", "Discounts", "Net Sales"].map(h => (
+                {["#", "iSKU", "Product Name", "Orders", "Units Sold", "Revenue", "Discounts", "Net Sales", "Platforms", "Stores"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap bg-gray-50">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filtered.map((r, i) => (
-                <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+              {skuSummaries.map((r, i) => (
+                <tr key={r.sku} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-2.5 text-xs text-gray-400">{i + 1}</td>
-                  <td className="px-4 py-2.5 text-xs text-gray-500 whitespace-nowrap">{r.date}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-700">{r.store_name}</td>
-                  <td className="px-4 py-2.5 text-sm">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      r.platform === "Shopee" ? "bg-orange-50 text-orange-700" :
-                      r.platform === "Shopee SG" ? "bg-orange-50 text-orange-600" :
-                      r.platform === "TikTok Shop" ? "bg-gray-900 text-white" :
-                      "bg-blue-50 text-blue-700"
-                    }`}>{r.platform}</span>
-                  </td>
                   <td className="px-4 py-2.5 text-sm font-mono font-medium text-gray-900">{r.sku}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 max-w-[200px] truncate">{r.product_name}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-500 font-mono">{r.order_id ?? "—"}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{Number(r.orders)}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{Number(r.units_sold)}</td>
-                  <td className="px-4 py-2.5 text-sm font-medium text-gray-900 text-right">{fmt(Number(r.revenue))}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(Number(r.discounts))}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(Number(r.net_sales))}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 max-w-[250px] truncate">{r.product_name}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{r.orders.toLocaleString()}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{r.units_sold.toLocaleString()}</td>
+                  <td className="px-4 py-2.5 text-sm font-medium text-gray-900 text-right">{fmt(r.revenue)}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(r.discounts)}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(r.net_sales)}</td>
+                  <td className="px-4 py-2.5 text-sm">
+                    <div className="flex flex-wrap gap-1">
+                      {r.platforms.map(p => (
+                        <span key={p} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                          p === "Shopee" ? "bg-orange-50 text-orange-700" :
+                          p === "Shopee SG" ? "bg-orange-50 text-orange-600" :
+                          p === "TikTok Shop" ? "bg-gray-900 text-white" :
+                          "bg-blue-50 text-blue-700"
+                        }`}>{p}</span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-gray-500">{r.stores.join(", ")}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <div className="flex items-center px-4 py-3 border-t bg-gray-50">
-          <p className="text-sm text-gray-500">Showing all {filtered.length.toLocaleString()} records</p>
+          <p className="text-sm text-gray-500">Showing all {skuSummaries.length.toLocaleString()} SKUs</p>
         </div>
       </div>
     </div>
