@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { SalesRecord, AdsRecord } from "@/lib/types";
 import KpiCard from "@/components/KpiCard";
@@ -11,92 +11,176 @@ import {
   ResponsiveContainer, Legend,
 } from "recharts";
 
+/* ── date helper ── */
+function parseDate(raw: string): Date | null {
+  try {
+    const [datePart] = raw.split(" ");
+    const [m, d, y] = datePart.split("/").map(Number);
+    return new Date(y, m - 1, d);
+  } catch { return null; }
+}
+
+function todayStart() { const d = new Date(); d.setHours(0,0,0,0); return d; }
+function yesterdayRange(): [Date, Date] {
+  const s = todayStart(); s.setDate(s.getDate() - 1);
+  const e = todayStart(); e.setMilliseconds(-1);
+  return [s, e];
+}
+
 export default function DashboardPage() {
   const [sales, setSales] = useState<SalesRecord[]>([]);
   const [ads, setAds] = useState<AdsRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true);
-      const [salesRes, adsRes] = await Promise.all([
-        supabase.from("sales_tracking").select("*"),
-        supabase.from("ads_performance").select("*"),
-      ]);
-      if (salesRes.data) setSales(salesRes.data);
-      if (adsRes.data) setAds(adsRes.data);
-      setLoading(false);
+  /* filters */
+  const [datePreset, setDatePreset] = useState("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [platform, setPlatform] = useState("All");
+  const [store, setStore] = useState("All");
+
+  /* batch fetch all rows */
+  const fetchAll = useCallback(async (table: string) => {
+    const pageSize = 1000;
+    let all: Record<string, unknown>[] = [];
+    let from = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const { data, error } = await supabase.from(table).select("*").order("date", { ascending: false }).range(from, from + pageSize - 1);
+      if (error || !data) break;
+      all = all.concat(data);
+      hasMore = data.length === pageSize;
+      from += pageSize;
     }
-    fetchData();
+    return all;
   }, []);
 
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const [s, a] = await Promise.all([fetchAll("sales_tracking"), fetchAll("ads_performance")]);
+      setSales(s as SalesRecord[]);
+      setAds(a as AdsRecord[]);
+      setLoading(false);
+    }
+    load();
+  }, [fetchAll]);
+
+  /* derived filter options */
+  const platforms = useMemo(() => ["All", ...Array.from(new Set(sales.map(s => s.platform)))], [sales]);
+  const stores = useMemo(() => {
+    const f = platform === "All" ? sales : sales.filter(s => s.platform === platform);
+    return ["All", ...Array.from(new Set(f.map(s => s.store_name)))];
+  }, [sales, platform]);
+
+  /* date filter logic */
+  const dateFilter = useCallback((dateStr: string) => {
+    if (datePreset === "all") return true;
+    const d = parseDate(dateStr);
+    if (!d) return true;
+
+    if (datePreset === "today") return d >= todayStart();
+    if (datePreset === "yesterday") { const [s, e] = yesterdayRange(); return d >= s && d <= e; }
+    if (datePreset === "7d") { const c = new Date(); c.setDate(c.getDate() - 7); c.setHours(0,0,0,0); return d >= c; }
+    if (datePreset === "30d") { const c = new Date(); c.setDate(c.getDate() - 30); c.setHours(0,0,0,0); return d >= c; }
+    if (datePreset === "custom" && customFrom && customTo) {
+      const from = new Date(customFrom + "T00:00:00");
+      const to = new Date(customTo + "T23:59:59");
+      return d >= from && d <= to;
+    }
+    return true;
+  }, [datePreset, customFrom, customTo]);
+
+  /* filtered data */
+  const filteredSales = useMemo(() => {
+    let r = sales;
+    r = r.filter(s => dateFilter(s.date));
+    if (platform !== "All") r = r.filter(s => s.platform === platform);
+    if (store !== "All") r = r.filter(s => s.store_name === store);
+    return r;
+  }, [sales, dateFilter, platform, store]);
+
+  const filteredAds = useMemo(() => {
+    let r = ads;
+    r = r.filter(a => dateFilter(a.date));
+    if (platform !== "All") r = r.filter(a => a.platform === platform);
+    if (store !== "All") r = r.filter(a => a.store === store);
+    return r;
+  }, [ads, dateFilter, platform, store]);
+
+  /* KPIs */
   const kpis = useMemo(() => {
-    const totalRevenue = sales.reduce((s, r) => s + Number(r.revenue), 0);
-    const totalOrders = sales.reduce((s, r) => s + Number(r.orders), 0);
-    const totalUnits = sales.reduce((s, r) => s + Number(r.units_sold), 0);
-    const totalAdsSpend = ads.reduce((s, r) => s + Number(r.ads_spend), 0);
-    const totalAdsSales = ads.reduce((s, r) => s + Number(r.ads_sales), 0);
+    const totalRevenue = filteredSales.reduce((s, r) => s + Number(r.revenue), 0);
+    const uniqueOrders = new Set(filteredSales.filter(r => r.order_id != null).map(r => String(r.order_id)));
+    const totalOrders = uniqueOrders.size;
+    const totalUnits = filteredSales.reduce((s, r) => s + Number(r.units_sold), 0);
+    const totalAdsSpend = filteredAds.reduce((s, r) => s + Number(r.ads_spend), 0);
+    const totalAdsSales = filteredAds.reduce((s, r) => s + Number(r.ads_sales), 0);
     const roas = totalAdsSpend > 0 ? totalAdsSales / totalAdsSpend : 0;
     return { totalRevenue, totalOrders, totalUnits, totalAdsSpend, totalAdsSales, roas };
-  }, [sales, ads]);
+  }, [filteredSales, filteredAds]);
 
-  // Daily sales trend
+  /* charts */
   const dailySales = useMemo(() => {
     const map: Record<string, { date: string; revenue: number; orders: number }> = {};
-    sales.forEach((r) => {
+    filteredSales.forEach(r => {
       const day = r.date.split(" ")[0];
       if (!map[day]) map[day] = { date: day, revenue: 0, orders: 0 };
       map[day].revenue += Number(r.revenue);
       map[day].orders += Number(r.orders);
     });
-    return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
-  }, [sales]);
+    return Object.values(map).sort((a, b) => {
+      const [am, ad, ay] = a.date.split("/").map(Number);
+      const [bm, bd, by] = b.date.split("/").map(Number);
+      return new Date(ay, am-1, ad).getTime() - new Date(by, bm-1, bd).getTime();
+    });
+  }, [filteredSales]);
 
-  // Orders by platform
   const platformOrders = useMemo(() => {
     const map: Record<string, number> = {};
-    sales.forEach((r) => {
-      map[r.platform] = (map[r.platform] || 0) + Number(r.units_sold);
-    });
+    filteredSales.forEach(r => { map[r.platform] = (map[r.platform] || 0) + Number(r.units_sold); });
     return Object.entries(map).map(([platform, units]) => ({ platform, units }));
-  }, [sales]);
+  }, [filteredSales]);
 
-  // Ads Spend vs Sales (daily)
   const dailyAds = useMemo(() => {
     const map: Record<string, { date: string; spend: number; adsSales: number }> = {};
-    ads.forEach((r) => {
+    filteredAds.forEach(r => {
       const day = r.date.split(" ")[0];
       if (!map[day]) map[day] = { date: day, spend: 0, adsSales: 0 };
       map[day].spend += Number(r.ads_spend);
       map[day].adsSales += Number(r.ads_sales);
     });
-    return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
-  }, [ads]);
+    return Object.values(map).sort((a, b) => {
+      const [am, ad, ay] = a.date.split("/").map(Number);
+      const [bm, bd, by] = b.date.split("/").map(Number);
+      return new Date(ay, am-1, ad).getTime() - new Date(by, bm-1, bd).getTime();
+    });
+  }, [filteredAds]);
 
-  // Store performance
+  /* store performance */
   const storePerf = useMemo(() => {
-    const map: Record<string, { store: string; platform: string; revenue: number; orders: number; units: number }> = {};
-    sales.forEach((r) => {
+    const map: Record<string, { store: string; platform: string; revenue: number; orders: Set<string>; units: number }> = {};
+    filteredSales.forEach(r => {
       const key = r.store_name;
-      if (!map[key]) map[key] = { store: r.store_name, platform: r.platform, revenue: 0, orders: 0, units: 0 };
+      if (!map[key]) map[key] = { store: r.store_name, platform: r.platform, revenue: 0, orders: new Set(), units: 0 };
       map[key].revenue += Number(r.revenue);
-      map[key].orders += Number(r.orders);
+      if (r.order_id != null) map[key].orders.add(String(r.order_id));
       map[key].units += Number(r.units_sold);
     });
-    return Object.values(map).sort((a, b) => b.revenue - a.revenue);
-  }, [sales]);
+    return Object.values(map).map(s => ({ ...s, orderCount: s.orders.size })).sort((a, b) => b.revenue - a.revenue);
+  }, [filteredSales]);
 
-  // Top iSKU performance
+  /* top iSKU */
   const skuPerf = useMemo(() => {
-    const map: Record<string, { sku: string; name: string; revenue: number; units: number; orders: number }> = {};
-    sales.forEach((r) => {
-      if (!map[r.sku]) map[r.sku] = { sku: r.sku, name: r.product_name, revenue: 0, units: 0, orders: 0 };
+    const map: Record<string, { sku: string; name: string; revenue: number; units: number; orders: Set<string> }> = {};
+    filteredSales.forEach(r => {
+      if (!map[r.sku]) map[r.sku] = { sku: r.sku, name: r.product_name, revenue: 0, units: 0, orders: new Set() };
       map[r.sku].revenue += Number(r.revenue);
       map[r.sku].units += Number(r.units_sold);
-      map[r.sku].orders += Number(r.orders);
+      if (r.order_id != null) map[r.sku].orders.add(String(r.order_id));
     });
-    return Object.values(map).sort((a, b) => b.revenue - a.revenue).slice(0, 20);
-  }, [sales]);
+    return Object.values(map).map(s => ({ ...s, orderCount: s.orders.size })).sort((a, b) => b.revenue - a.revenue).slice(0, 20);
+  }, [filteredSales]);
 
   const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -113,7 +197,41 @@ export default function DashboardPage() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-sm text-gray-500 mt-1">Live data from Supabase — {sales.length.toLocaleString()} sales records</p>
+        <p className="text-sm text-gray-500 mt-1">
+          Live data — {filteredSales.length.toLocaleString()} sales records
+          {platform !== "All" && ` · ${platform}`}
+          {store !== "All" && ` · ${store}`}
+        </p>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <select value={datePreset} onChange={e => setDatePreset(e.target.value)}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+          <option value="all">All Time</option>
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="7d">Last 7 Days</option>
+          <option value="30d">Last 30 Days</option>
+          <option value="custom">Custom Range</option>
+        </select>
+        {datePreset === "custom" && (
+          <>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+            <span className="text-gray-400 text-sm">to</span>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+          </>
+        )}
+        <select value={platform} onChange={e => { setPlatform(e.target.value); setStore("All"); }}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+          {platforms.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select value={store} onChange={e => setStore(e.target.value)}
+          className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+          {stores.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
       </div>
 
       {/* KPI Cards */}
@@ -176,22 +294,22 @@ export default function DashboardPage() {
       {/* Store Performance */}
       <div className="bg-white rounded-xl border overflow-hidden">
         <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Store Performance</h3></div>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
           <table className="w-full">
-            <thead className="bg-gray-50 border-b">
+            <thead className="bg-gray-50 border-b sticky top-0 z-10">
               <tr>
-                {["Store", "Platform", "Revenue", "Orders", "Units Sold", "Avg Unit Price"].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">{h}</th>
+                {["Store", "Platform", "Revenue", "Orders", "Units Sold", "Avg Unit Price"].map(h => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase bg-gray-50">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {storePerf.map((s) => (
+              {storePerf.map(s => (
                 <tr key={s.store} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{s.store}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{s.platform}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{fmt(s.revenue)}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{s.orders.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{s.orderCount.toLocaleString()}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{s.units.toLocaleString()}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{s.units > 0 ? fmt(s.revenue / s.units) : "—"}</td>
                 </tr>
@@ -204,23 +322,23 @@ export default function DashboardPage() {
       {/* Top iSKU Performance */}
       <div className="bg-white rounded-xl border overflow-hidden">
         <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Top iSKU Performance</h3></div>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
           <table className="w-full">
-            <thead className="bg-gray-50 border-b">
+            <thead className="bg-gray-50 border-b sticky top-0 z-10">
               <tr>
-                {["iSKU", "Product Name", "Revenue", "Units Sold", "Orders"].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">{h}</th>
+                {["iSKU", "Product Name", "Revenue", "Units Sold", "Orders"].map(h => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase bg-gray-50">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {skuPerf.map((s) => (
+              {skuPerf.map(s => (
                 <tr key={s.sku} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm font-mono font-medium text-gray-900">{s.sku}</td>
                   <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate">{s.name}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{fmt(s.revenue)}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{s.units.toLocaleString()}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{s.orders.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{s.orderCount.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>

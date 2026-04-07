@@ -1,8 +1,23 @@
 "use client";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { AdsRecord } from "@/lib/types";
 import { Search } from "lucide-react";
+
+/* ── date helpers ── */
+function parseDate(raw: string): Date | null {
+  try {
+    const [datePart] = raw.split(" ");
+    const [m, d, y] = datePart.split("/").map(Number);
+    return new Date(y, m - 1, d);
+  } catch { return null; }
+}
+function todayStart() { const d = new Date(); d.setHours(0,0,0,0); return d; }
+function yesterdayRange(): [Date, Date] {
+  const s = todayStart(); s.setDate(s.getDate() - 1);
+  const e = todayStart(); e.setMilliseconds(-1);
+  return [s, e];
+}
 
 export default function AdsPage() {
   const [ads, setAds] = useState<AdsRecord[]>([]);
@@ -10,58 +25,64 @@ export default function AdsPage() {
   const [search, setSearch] = useState("");
   const [platform, setPlatform] = useState("All");
   const [store, setStore] = useState("All");
-  const [dateRange, setDateRange] = useState("all");
-  const [page, setPage] = useState(1);
-  const perPage = 50;
+  const [datePreset, setDatePreset] = useState("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   useEffect(() => {
-    async function fetchAds() {
+    async function fetchAllAds() {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("ads_performance")
-        .select("*")
-        .order("date", { ascending: false });
-      if (!error && data) setAds(data);
+      const pageSize = 1000;
+      let allData: AdsRecord[] = [];
+      let from = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from("ads_performance").select("*").order("date", { ascending: false }).range(from, from + pageSize - 1);
+        if (error || !data) break;
+        allData = allData.concat(data);
+        hasMore = data.length === pageSize;
+        from += pageSize;
+      }
+      setAds(allData);
       setLoading(false);
     }
-    fetchAds();
+    fetchAllAds();
   }, []);
 
-  const platforms = useMemo(() => ["All", ...Array.from(new Set(ads.map((a) => a.platform)))], [ads]);
+  const platforms = useMemo(() => ["All", ...Array.from(new Set(ads.map(a => a.platform)))], [ads]);
   const stores = useMemo(() => {
-    const filtered = platform === "All" ? ads : ads.filter((a) => a.platform === platform);
-    return ["All", ...Array.from(new Set(filtered.map((a) => a.store)))];
+    const filtered = platform === "All" ? ads : ads.filter(a => a.platform === platform);
+    return ["All", ...Array.from(new Set(filtered.map(a => a.store)))];
   }, [ads, platform]);
+
+  const dateFilter = useCallback((dateStr: string) => {
+    if (datePreset === "all") return true;
+    const d = parseDate(dateStr);
+    if (!d) return true;
+    if (datePreset === "today") return d >= todayStart();
+    if (datePreset === "yesterday") { const [s, e] = yesterdayRange(); return d >= s && d <= e; }
+    if (datePreset === "7d") { const c = new Date(); c.setDate(c.getDate() - 7); c.setHours(0,0,0,0); return d >= c; }
+    if (datePreset === "30d") { const c = new Date(); c.setDate(c.getDate() - 30); c.setHours(0,0,0,0); return d >= c; }
+    if (datePreset === "custom" && customFrom && customTo) {
+      const from = new Date(customFrom + "T00:00:00");
+      const to = new Date(customTo + "T23:59:59");
+      return d >= from && d <= to;
+    }
+    return true;
+  }, [datePreset, customFrom, customTo]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     let result = ads;
-
-    if (dateRange !== "all") {
-      const now = new Date();
-      let cutoff = new Date();
-      if (dateRange === "today") cutoff.setHours(0, 0, 0, 0);
-      else if (dateRange === "7d") cutoff.setDate(now.getDate() - 7);
-      else if (dateRange === "30d") cutoff.setDate(now.getDate() - 30);
-      result = result.filter((r) => {
-        try {
-          const parts = r.date.split(" ")[0].split("/");
-          const d = new Date(Number(parts[2]), Number(parts[0]) - 1, Number(parts[1]));
-          return d >= cutoff;
-        } catch { return true; }
-      });
-    }
-
-    if (platform !== "All") result = result.filter((r) => r.platform === platform);
-    if (store !== "All") result = result.filter((r) => r.store === store);
-    if (q) result = result.filter((r) =>
+    result = result.filter(r => dateFilter(r.date));
+    if (platform !== "All") result = result.filter(r => r.platform === platform);
+    if (store !== "All") result = result.filter(r => r.store === store);
+    if (q) result = result.filter(r =>
       r.sku.toLowerCase().includes(q) || r.campaign_name.toLowerCase().includes(q)
     );
     return result;
-  }, [ads, search, platform, store, dateRange]);
-
-  const totalPages = Math.ceil(filtered.length / perPage);
-  const paginated = filtered.slice((page - 1) * perPage, page * perPage);
+  }, [ads, search, platform, store, dateFilter]);
 
   const totalSpend = filtered.reduce((s, r) => s + Number(r.ads_spend), 0);
   const totalAdsSales = filtered.reduce((s, r) => s + Number(r.ads_sales), 0);
@@ -89,25 +110,36 @@ export default function AdsPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">
-        <select value={dateRange} onChange={(e) => { setDateRange(e.target.value); setPage(1); }}
+        <select value={datePreset} onChange={e => setDatePreset(e.target.value)}
           className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
           <option value="all">All Time</option>
           <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
           <option value="7d">Last 7 Days</option>
           <option value="30d">Last 30 Days</option>
+          <option value="custom">Custom Range</option>
         </select>
-        <select value={platform} onChange={(e) => { setPlatform(e.target.value); setStore("All"); setPage(1); }}
+        {datePreset === "custom" && (
+          <>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+            <span className="text-gray-400 text-sm">to</span>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+          </>
+        )}
+        <select value={platform} onChange={e => { setPlatform(e.target.value); setStore("All"); }}
           className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
-          {platforms.map((p) => <option key={p} value={p}>{p}</option>)}
+          {platforms.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
-        <select value={store} onChange={(e) => { setStore(e.target.value); setPage(1); }}
+        <select value={store} onChange={e => setStore(e.target.value)}
           className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
-          {stores.map((s) => <option key={s} value={s}>{s}</option>)}
+          {stores.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <div className="relative flex-1 max-w-xs">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input type="text" placeholder="Search iSKU or campaign..."
-            value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            value={search} onChange={e => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
       </div>
@@ -120,18 +152,19 @@ export default function AdsPage() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 border-b">
+              <thead className="bg-gray-50 border-b sticky top-0 z-10">
                 <tr>
-                  {["Date", "Store", "Platform", "iSKU", "Campaign", "Ads Spend", "Ads Sales", "Orders", "Units", "CTR", "CPC", "CPM", "ROAS"].map((h) => (
-                    <th key={h} className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">{h}</th>
+                  {["#", "Date", "Store", "Platform", "iSKU", "Campaign", "Ads Spend", "Ads Sales", "Orders", "Units", "CTR", "CPC", "CPM", "ROAS"].map(h => (
+                    <th key={h} className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap bg-gray-50">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {paginated.map((r) => (
+                {filtered.map((r, i) => (
                   <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-3 py-2.5 text-xs text-gray-400">{i + 1}</td>
                     <td className="px-3 py-2.5 text-xs text-gray-500 whitespace-nowrap">{r.date}</td>
                     <td className="px-3 py-2.5 text-sm text-gray-700">{r.store}</td>
                     <td className="px-3 py-2.5 text-sm">
@@ -160,21 +193,9 @@ export default function AdsPage() {
               </tbody>
             </table>
           </div>
-
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
-              <p className="text-sm text-gray-500">
-                Showing {(page - 1) * perPage + 1}–{Math.min(page * perPage, filtered.length)} of {filtered.length.toLocaleString()}
-              </p>
-              <div className="flex gap-2">
-                <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
-                  className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Previous</button>
-                <span className="px-3 py-1.5 text-sm text-gray-600">Page {page} of {totalPages}</span>
-                <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages}
-                  className="px-3 py-1.5 text-sm border rounded-lg disabled:opacity-40 hover:bg-white">Next</button>
-              </div>
-            </div>
-          )}
+          <div className="flex items-center px-4 py-3 border-t bg-gray-50">
+            <p className="text-sm text-gray-500">Showing all {filtered.length.toLocaleString()} records</p>
+          </div>
         </div>
       )}
     </div>
