@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import { SalesRecord } from "@/lib/types";
+import { SalesRecord, SkuMaster } from "@/lib/types";
 import { Search } from "lucide-react";
 
 /* ── date helpers ── */
@@ -19,6 +19,8 @@ function yesterdayRange(): [Date, Date] {
   return [s, e];
 }
 
+const VALID_STATUS = ["Completed", "Shipped"];
+
 interface SkuSummary {
   sku: string;
   product_name: string;
@@ -27,12 +29,21 @@ interface SkuSummary {
   revenue: number;
   discounts: number;
   net_sales: number;
+  avg_selling_price: number;
+  master_selling_price: number | null;
+  price_diff: number | null;
   platforms: string[];
   stores: string[];
+  /* cancelled / returned */
+  cancelled_orders: number;
+  cancelled_units: number;
+  returned_orders: number;
+  returned_units: number;
 }
 
 export default function SalesPage() {
   const [sales, setSales] = useState<SalesRecord[]>([]);
+  const [skuMaster, setSkuMaster] = useState<Record<string, SkuMaster>>({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [platform, setPlatform] = useState("All");
@@ -41,26 +52,38 @@ export default function SalesPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
 
+  /* batch fetch helper */
+  const fetchAllRows = useCallback(async (table: string) => {
+    const pageSize = 1000;
+    let all: Record<string, unknown>[] = [];
+    let from = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const { data, error } = await supabase.from(table).select("*").range(from, from + pageSize - 1);
+      if (error || !data) break;
+      all = all.concat(data);
+      hasMore = data.length === pageSize;
+      from += pageSize;
+    }
+    return all;
+  }, []);
+
   useEffect(() => {
-    async function fetchAllSales() {
+    async function load() {
       setLoading(true);
-      const pageSize = 1000;
-      let allData: SalesRecord[] = [];
-      let from = 0;
-      let hasMore = true;
-      while (hasMore) {
-        const { data, error } = await supabase
-          .from("sales_tracking").select("*").order("date", { ascending: false }).range(from, from + pageSize - 1);
-        if (error || !data) break;
-        allData = allData.concat(data);
-        hasMore = data.length === pageSize;
-        from += pageSize;
-      }
-      setSales(allData);
+      const [salesData, skuData] = await Promise.all([
+        fetchAllRows("sales_tracking"),
+        fetchAllRows("sku_master"),
+      ]);
+      setSales(salesData as unknown as SalesRecord[]);
+      /* build SKU master lookup by sku_code */
+      const lookup: Record<string, SkuMaster> = {};
+      (skuData as unknown as SkuMaster[]).forEach(s => { lookup[s.sku_code] = s; });
+      setSkuMaster(lookup);
       setLoading(false);
     }
-    fetchAllSales();
-  }, []);
+    load();
+  }, [fetchAllRows]);
 
   const platforms = useMemo(() => ["All", ...Array.from(new Set(sales.map(s => s.platform)))], [sales]);
   const stores = useMemo(() => {
@@ -84,7 +107,7 @@ export default function SalesPage() {
     return true;
   }, [datePreset, customFrom, customTo]);
 
-  /* filtered raw records */
+  /* filtered by date/platform/store/search */
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     let result = sales;
@@ -97,46 +120,86 @@ export default function SalesPage() {
     return result;
   }, [sales, search, platform, store, dateFilter]);
 
-  /* group by SKU */
+  /* group by SKU — only Completed + Shipped for main metrics */
   const skuSummaries = useMemo(() => {
     const map: Record<string, {
-      sku: string; product_name: string; orderIds: Set<string>;
-      units_sold: number; revenue: number; discounts: number; net_sales: number;
+      sku: string; product_name: string;
+      orderIds: Set<string>; units_sold: number; revenue: number; discounts: number; net_sales: number;
       platforms: Set<string>; stores: Set<string>;
+      cancelledIds: Set<string>; cancelledUnits: number;
+      returnedIds: Set<string>; returnedUnits: number;
     }> = {};
+
     filtered.forEach(r => {
       if (!map[r.sku]) {
         map[r.sku] = {
-          sku: r.sku, product_name: r.product_name, orderIds: new Set(),
-          units_sold: 0, revenue: 0, discounts: 0, net_sales: 0,
+          sku: r.sku, product_name: r.product_name,
+          orderIds: new Set(), units_sold: 0, revenue: 0, discounts: 0, net_sales: 0,
           platforms: new Set(), stores: new Set(),
+          cancelledIds: new Set(), cancelledUnits: 0,
+          returnedIds: new Set(), returnedUnits: 0,
         };
       }
       const entry = map[r.sku];
-      if (r.order_id != null) entry.orderIds.add(String(r.order_id));
-      entry.units_sold += Number(r.units_sold);
-      entry.revenue += Number(r.revenue);
-      entry.discounts += Number(r.discounts);
-      entry.net_sales += Number(r.net_sales);
+      const oid = r.order_id != null ? String(r.order_id) : null;
+      const status = r.order_status || "";
+
+      if (VALID_STATUS.includes(status)) {
+        if (oid) entry.orderIds.add(oid);
+        entry.units_sold += Number(r.units_sold);
+        entry.revenue += Number(r.revenue);
+        entry.discounts += Number(r.discounts);
+        entry.net_sales += Number(r.net_sales);
+      } else if (status === "Cancelled") {
+        if (oid) entry.cancelledIds.add(oid);
+        entry.cancelledUnits += Number(r.units_sold);
+      } else if (status === "Returned") {
+        if (oid) entry.returnedIds.add(oid);
+        entry.returnedUnits += Number(r.units_sold);
+      }
       entry.platforms.add(r.platform);
       entry.stores.add(r.store_name);
     });
-    return Object.values(map).map(e => ({
-      sku: e.sku,
-      product_name: e.product_name,
-      orders: e.orderIds.size,
-      units_sold: e.units_sold,
-      revenue: e.revenue,
-      discounts: e.discounts,
-      net_sales: e.net_sales,
-      platforms: Array.from(e.platforms),
-      stores: Array.from(e.stores),
-    } as SkuSummary)).sort((a, b) => b.revenue - a.revenue);
-  }, [filtered]);
 
+    return Object.values(map).map(e => {
+      const avgSP = e.units_sold > 0 ? e.revenue / e.units_sold : 0;
+      const master = skuMaster[e.sku];
+      const masterSP = master && Number(master.selling_price) > 0 ? Number(master.selling_price) : null;
+      return {
+        sku: e.sku,
+        product_name: e.product_name,
+        orders: e.orderIds.size,
+        units_sold: e.units_sold,
+        revenue: e.revenue,
+        discounts: e.discounts,
+        net_sales: e.net_sales,
+        avg_selling_price: avgSP,
+        master_selling_price: masterSP,
+        price_diff: masterSP != null && avgSP > 0 ? ((avgSP - masterSP) / masterSP) * 100 : null,
+        platforms: Array.from(e.platforms),
+        stores: Array.from(e.stores),
+        cancelled_orders: e.cancelledIds.size,
+        cancelled_units: e.cancelledUnits,
+        returned_orders: e.returnedIds.size,
+        returned_units: e.returnedUnits,
+      } as SkuSummary;
+    }).sort((a, b) => b.revenue - a.revenue);
+  }, [filtered, skuMaster]);
+
+  /* totals — only Completed + Shipped */
   const totalRevenue = skuSummaries.reduce((s, r) => s + r.revenue, 0);
   const totalUnits = skuSummaries.reduce((s, r) => s + r.units_sold, 0);
-  const totalOrders = new Set(filtered.filter(r => r.order_id != null).map(r => String(r.order_id))).size;
+  const totalOrders = new Set(
+    filtered.filter(r => r.order_id != null && VALID_STATUS.includes(r.order_status || "")).map(r => String(r.order_id))
+  ).size;
+  const totalCancelledOrders = new Set(
+    filtered.filter(r => r.order_id != null && r.order_status === "Cancelled").map(r => String(r.order_id))
+  ).size;
+  const totalCancelledUnits = skuSummaries.reduce((s, r) => s + r.cancelled_units, 0);
+  const totalReturnedOrders = new Set(
+    filtered.filter(r => r.order_id != null && r.order_status === "Returned").map(r => String(r.order_id))
+  ).size;
+  const totalReturnedUnits = skuSummaries.reduce((s, r) => s + r.returned_units, 0);
 
   const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -151,13 +214,9 @@ export default function SalesPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Sales by iSKU</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {skuSummaries.length.toLocaleString()} SKUs — Revenue: {fmt(totalRevenue)} · Units: {totalUnits.toLocaleString()} · Orders: {totalOrders.toLocaleString()}
-          </p>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Sales by iSKU</h1>
+        <p className="text-sm text-gray-500 mt-1">Completed &amp; Shipped only · {skuSummaries.length.toLocaleString()} SKUs</p>
       </div>
 
       {/* Filters */}
@@ -197,22 +256,34 @@ export default function SalesPage() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
         <div className="bg-white rounded-xl border p-4">
-          <p className="text-xs font-medium text-gray-500 uppercase">Total SKUs</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{skuSummaries.length.toLocaleString()}</p>
+          <p className="text-xs font-medium text-gray-500 uppercase">Total Revenue</p>
+          <p className="text-xl font-bold text-blue-600 mt-1">{fmt(totalRevenue)}</p>
         </div>
         <div className="bg-white rounded-xl border p-4">
           <p className="text-xs font-medium text-gray-500 uppercase">Total Orders</p>
-          <p className="text-2xl font-bold text-green-600 mt-1">{totalOrders.toLocaleString()}</p>
+          <p className="text-xl font-bold text-green-600 mt-1">{totalOrders.toLocaleString()}</p>
         </div>
         <div className="bg-white rounded-xl border p-4">
-          <p className="text-xs font-medium text-gray-500 uppercase">Total Units Sold</p>
-          <p className="text-2xl font-bold text-purple-600 mt-1">{totalUnits.toLocaleString()}</p>
+          <p className="text-xs font-medium text-gray-500 uppercase">Units Sold</p>
+          <p className="text-xl font-bold text-purple-600 mt-1">{totalUnits.toLocaleString()}</p>
         </div>
         <div className="bg-white rounded-xl border p-4">
-          <p className="text-xs font-medium text-gray-500 uppercase">Total Revenue</p>
-          <p className="text-2xl font-bold text-blue-600 mt-1">{fmt(totalRevenue)}</p>
+          <p className="text-xs font-medium text-gray-500 uppercase">Cancelled Orders</p>
+          <p className="text-xl font-bold text-red-600 mt-1">{totalCancelledOrders.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-xs font-medium text-gray-500 uppercase">Cancelled Units</p>
+          <p className="text-xl font-bold text-red-500 mt-1">{totalCancelledUnits.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-xs font-medium text-gray-500 uppercase">Returned Orders</p>
+          <p className="text-xl font-bold text-orange-600 mt-1">{totalReturnedOrders.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-xs font-medium text-gray-500 uppercase">Returned Units</p>
+          <p className="text-xl font-bold text-orange-500 mt-1">{totalReturnedUnits.toLocaleString()}</p>
         </div>
       </div>
 
@@ -222,7 +293,7 @@ export default function SalesPage() {
           <table className="w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10">
               <tr>
-                {["#", "iSKU", "Product Name", "Orders", "Units Sold", "Revenue", "Discounts", "Net Sales", "Platforms", "Stores"].map(h => (
+                {["#", "iSKU", "Product Name", "Orders", "Units Sold", "Revenue", "Avg Price", "Master Price", "Diff %", "Cancelled", "Returned", "Platforms"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap bg-gray-50">{h}</th>
                 ))}
               </tr>
@@ -232,12 +303,33 @@ export default function SalesPage() {
                 <tr key={r.sku} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-2.5 text-xs text-gray-400">{i + 1}</td>
                   <td className="px-4 py-2.5 text-sm font-mono font-medium text-gray-900">{r.sku}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 max-w-[250px] truncate">{r.product_name}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 max-w-[220px] truncate">{r.product_name}</td>
                   <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{r.orders.toLocaleString()}</td>
                   <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{r.units_sold.toLocaleString()}</td>
                   <td className="px-4 py-2.5 text-sm font-medium text-gray-900 text-right">{fmt(r.revenue)}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(r.discounts)}</td>
-                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{fmt(r.net_sales)}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{r.avg_selling_price > 0 ? fmt(r.avg_selling_price) : "—"}</td>
+                  <td className="px-4 py-2.5 text-sm text-gray-600 text-right">{r.master_selling_price != null ? fmt(r.master_selling_price) : "—"}</td>
+                  <td className="px-4 py-2.5 text-sm text-right">
+                    {r.price_diff != null ? (
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                        r.price_diff > 5 ? "bg-green-50 text-green-700" :
+                        r.price_diff < -5 ? "bg-red-50 text-red-700" :
+                        "bg-gray-100 text-gray-600"
+                      }`}>
+                        {r.price_diff > 0 ? "+" : ""}{r.price_diff.toFixed(1)}%
+                      </span>
+                    ) : "—"}
+                  </td>
+                  <td className="px-4 py-2.5 text-sm text-right">
+                    {r.cancelled_orders > 0 ? (
+                      <span className="text-red-600">{r.cancelled_orders} / {r.cancelled_units}u</span>
+                    ) : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-sm text-right">
+                    {r.returned_orders > 0 ? (
+                      <span className="text-orange-600">{r.returned_orders} / {r.returned_units}u</span>
+                    ) : <span className="text-gray-300">—</span>}
+                  </td>
                   <td className="px-4 py-2.5 text-sm">
                     <div className="flex flex-wrap gap-1">
                       {r.platforms.map(p => (
@@ -250,7 +342,6 @@ export default function SalesPage() {
                       ))}
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-xs text-gray-500">{r.stores.join(", ")}</td>
                 </tr>
               ))}
             </tbody>

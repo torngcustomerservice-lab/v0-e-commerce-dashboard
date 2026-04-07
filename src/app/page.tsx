@@ -4,7 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { SalesRecord, AdsRecord } from "@/lib/types";
 import KpiCard from "@/components/KpiCard";
 import {
-  DollarSign, ShoppingCart, Package, Megaphone, TrendingUp, BarChart3,
+  DollarSign, ShoppingCart, Package, Megaphone, TrendingUp, BarChart3, XCircle, RotateCcw,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -26,6 +26,8 @@ function yesterdayRange(): [Date, Date] {
   const e = todayStart(); e.setMilliseconds(-1);
   return [s, e];
 }
+
+const VALID_STATUS = ["Completed", "Shipped"];
 
 export default function DashboardPage() {
   const [sales, setSales] = useState<SalesRecord[]>([]);
@@ -91,14 +93,19 @@ export default function DashboardPage() {
     return true;
   }, [datePreset, customFrom, customTo]);
 
-  /* filtered data */
-  const filteredSales = useMemo(() => {
+  /* filtered data by date/platform/store */
+  const allFiltered = useMemo(() => {
     let r = sales;
     r = r.filter(s => dateFilter(s.date));
     if (platform !== "All") r = r.filter(s => s.platform === platform);
     if (store !== "All") r = r.filter(s => s.store_name === store);
     return r;
   }, [sales, dateFilter, platform, store]);
+
+  /* split by status */
+  const completedSales = useMemo(() => allFiltered.filter(r => VALID_STATUS.includes(r.order_status || "")), [allFiltered]);
+  const cancelledSales = useMemo(() => allFiltered.filter(r => r.order_status === "Cancelled"), [allFiltered]);
+  const returnedSales = useMemo(() => allFiltered.filter(r => r.order_status === "Returned"), [allFiltered]);
 
   const filteredAds = useMemo(() => {
     let r = ads;
@@ -108,22 +115,30 @@ export default function DashboardPage() {
     return r;
   }, [ads, dateFilter, platform, store]);
 
-  /* KPIs */
+  /* KPIs — only Completed + Shipped */
   const kpis = useMemo(() => {
-    const totalRevenue = filteredSales.reduce((s, r) => s + Number(r.revenue), 0);
-    const uniqueOrders = new Set(filteredSales.filter(r => r.order_id != null).map(r => String(r.order_id)));
+    const totalRevenue = completedSales.reduce((s, r) => s + Number(r.revenue), 0);
+    const uniqueOrders = new Set(completedSales.filter(r => r.order_id != null).map(r => String(r.order_id)));
     const totalOrders = uniqueOrders.size;
-    const totalUnits = filteredSales.reduce((s, r) => s + Number(r.units_sold), 0);
+    const totalUnits = completedSales.reduce((s, r) => s + Number(r.units_sold), 0);
     const totalAdsSpend = filteredAds.reduce((s, r) => s + Number(r.ads_spend), 0);
     const totalAdsSales = filteredAds.reduce((s, r) => s + Number(r.ads_sales), 0);
     const roas = totalAdsSpend > 0 ? totalAdsSales / totalAdsSpend : 0;
-    return { totalRevenue, totalOrders, totalUnits, totalAdsSpend, totalAdsSales, roas };
-  }, [filteredSales, filteredAds]);
 
-  /* charts */
+    /* cancelled */
+    const cancelledOrders = new Set(cancelledSales.filter(r => r.order_id != null).map(r => String(r.order_id))).size;
+    const cancelledUnits = cancelledSales.reduce((s, r) => s + Number(r.units_sold), 0);
+    /* returned */
+    const returnedOrders = new Set(returnedSales.filter(r => r.order_id != null).map(r => String(r.order_id))).size;
+    const returnedUnits = returnedSales.reduce((s, r) => s + Number(r.units_sold), 0);
+
+    return { totalRevenue, totalOrders, totalUnits, totalAdsSpend, totalAdsSales, roas, cancelledOrders, cancelledUnits, returnedOrders, returnedUnits };
+  }, [completedSales, cancelledSales, returnedSales, filteredAds]);
+
+  /* charts — only Completed + Shipped */
   const dailySales = useMemo(() => {
     const map: Record<string, { date: string; revenue: number; orders: number }> = {};
-    filteredSales.forEach(r => {
+    completedSales.forEach(r => {
       const day = r.date.split(" ")[0];
       if (!map[day]) map[day] = { date: day, revenue: 0, orders: 0 };
       map[day].revenue += Number(r.revenue);
@@ -134,13 +149,13 @@ export default function DashboardPage() {
       const [bm, bd, by] = b.date.split("/").map(Number);
       return new Date(ay, am-1, ad).getTime() - new Date(by, bm-1, bd).getTime();
     });
-  }, [filteredSales]);
+  }, [completedSales]);
 
   const platformOrders = useMemo(() => {
     const map: Record<string, number> = {};
-    filteredSales.forEach(r => { map[r.platform] = (map[r.platform] || 0) + Number(r.units_sold); });
+    completedSales.forEach(r => { map[r.platform] = (map[r.platform] || 0) + Number(r.units_sold); });
     return Object.entries(map).map(([platform, units]) => ({ platform, units }));
-  }, [filteredSales]);
+  }, [completedSales]);
 
   const dailyAds = useMemo(() => {
     const map: Record<string, { date: string; spend: number; adsSales: number }> = {};
@@ -157,10 +172,10 @@ export default function DashboardPage() {
     });
   }, [filteredAds]);
 
-  /* store performance */
+  /* store performance — only Completed + Shipped */
   const storePerf = useMemo(() => {
     const map: Record<string, { store: string; platform: string; revenue: number; orders: Set<string>; units: number }> = {};
-    filteredSales.forEach(r => {
+    completedSales.forEach(r => {
       const key = r.store_name;
       if (!map[key]) map[key] = { store: r.store_name, platform: r.platform, revenue: 0, orders: new Set(), units: 0 };
       map[key].revenue += Number(r.revenue);
@@ -168,19 +183,19 @@ export default function DashboardPage() {
       map[key].units += Number(r.units_sold);
     });
     return Object.values(map).map(s => ({ ...s, orderCount: s.orders.size })).sort((a, b) => b.revenue - a.revenue);
-  }, [filteredSales]);
+  }, [completedSales]);
 
-  /* top iSKU */
+  /* top iSKU — only Completed + Shipped */
   const skuPerf = useMemo(() => {
     const map: Record<string, { sku: string; name: string; revenue: number; units: number; orders: Set<string> }> = {};
-    filteredSales.forEach(r => {
+    completedSales.forEach(r => {
       if (!map[r.sku]) map[r.sku] = { sku: r.sku, name: r.product_name, revenue: 0, units: 0, orders: new Set() };
       map[r.sku].revenue += Number(r.revenue);
       map[r.sku].units += Number(r.units_sold);
       if (r.order_id != null) map[r.sku].orders.add(String(r.order_id));
     });
     return Object.values(map).map(s => ({ ...s, orderCount: s.orders.size })).sort((a, b) => b.revenue - a.revenue).slice(0, 20);
-  }, [filteredSales]);
+  }, [completedSales]);
 
   const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -198,7 +213,7 @@ export default function DashboardPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Live data — {filteredSales.length.toLocaleString()} sales records
+          Live data — Completed &amp; Shipped only
           {platform !== "All" && ` · ${platform}`}
           {store !== "All" && ` · ${store}`}
         </p>
@@ -234,7 +249,7 @@ export default function DashboardPage() {
         </select>
       </div>
 
-      {/* KPI Cards */}
+      {/* KPI Cards — Sales (Completed + Shipped) */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <KpiCard title="Total Sales" value={fmt(kpis.totalRevenue)} icon={DollarSign} color="blue" />
         <KpiCard title="Total Orders" value={kpis.totalOrders.toLocaleString()} icon={ShoppingCart} color="green" />
@@ -244,10 +259,18 @@ export default function DashboardPage() {
         <KpiCard title="ROAS" value={kpis.roas.toFixed(2) + "x"} icon={BarChart3} color="orange" />
       </div>
 
+      {/* KPI Cards — Cancelled & Returned */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <KpiCard title="Cancelled Orders" value={kpis.cancelledOrders.toLocaleString()} icon={XCircle} color="red" />
+        <KpiCard title="Cancelled Units" value={kpis.cancelledUnits.toLocaleString()} icon={XCircle} color="red" />
+        <KpiCard title="Returned Orders" value={kpis.returnedOrders.toLocaleString()} icon={RotateCcw} color="orange" />
+        <KpiCard title="Returned Units" value={kpis.returnedUnits.toLocaleString()} icon={RotateCcw} color="orange" />
+      </div>
+
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl border p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Daily Sales Trend</h3>
+          <h3 className="text-sm font-semibold text-gray-700 mb-4">Daily Sales Trend (Completed &amp; Shipped)</h3>
           <ResponsiveContainer width="100%" height={280}>
             <LineChart data={dailySales}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -260,7 +283,7 @@ export default function DashboardPage() {
         </div>
 
         <div className="bg-white rounded-xl border p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Units Sold by Platform</h3>
+          <h3 className="text-sm font-semibold text-gray-700 mb-4">Units Sold by Platform (Completed &amp; Shipped)</h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={platformOrders}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -293,7 +316,7 @@ export default function DashboardPage() {
 
       {/* Store Performance */}
       <div className="bg-white rounded-xl border overflow-hidden">
-        <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Store Performance</h3></div>
+        <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Store Performance (Completed &amp; Shipped)</h3></div>
         <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
           <table className="w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10">
@@ -321,7 +344,7 @@ export default function DashboardPage() {
 
       {/* Top iSKU Performance */}
       <div className="bg-white rounded-xl border overflow-hidden">
-        <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Top iSKU Performance</h3></div>
+        <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Top iSKU Performance (Completed &amp; Shipped)</h3></div>
         <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
           <table className="w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10">
