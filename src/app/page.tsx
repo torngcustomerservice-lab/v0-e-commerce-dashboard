@@ -4,14 +4,19 @@ import { supabase } from "@/lib/supabase";
 import { SalesRecord, AdsRecord } from "@/lib/types";
 import KpiCard from "@/components/KpiCard";
 import {
-  DollarSign, ShoppingCart, Package, Megaphone, TrendingUp, BarChart3, XCircle, RotateCcw,
+  DollarSign, ShoppingCart, Package, Megaphone, TrendingUp, BarChart3, XCircle, RotateCcw, ArrowUpDown,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
 } from "recharts";
 
-/* ── date helper ── */
+/* ── helpers ── */
+function normalizeSku(sku: string): string {
+  if (/^\d+$/.test(sku)) return sku.padStart(4, "0");
+  return sku;
+}
+
 function parseDate(raw: string): Date | null {
   try {
     const [datePart] = raw.split(" ");
@@ -29,6 +34,9 @@ function yesterdayRange(): [Date, Date] {
 
 const VALID_STATUS = ["Completed", "Shipped"];
 
+type SkuSortKey = "revenue" | "units" | "orderCount";
+type SortDir = "asc" | "desc";
+
 export default function DashboardPage() {
   const [sales, setSales] = useState<SalesRecord[]>([]);
   const [ads, setAds] = useState<AdsRecord[]>([]);
@@ -40,6 +48,15 @@ export default function DashboardPage() {
   const [customTo, setCustomTo] = useState("");
   const [platform, setPlatform] = useState("All");
   const [store, setStore] = useState("All");
+
+  /* sorting for top iSKU table */
+  const [skuSortKey, setSkuSortKey] = useState<SkuSortKey>("revenue");
+  const [skuSortDir, setSkuSortDir] = useState<SortDir>("desc");
+
+  const handleSkuSort = (key: SkuSortKey) => {
+    if (skuSortKey === key) setSkuSortDir(skuSortDir === "asc" ? "desc" : "asc");
+    else { setSkuSortKey(key); setSkuSortDir("desc"); }
+  };
 
   /* batch fetch all rows */
   const fetchAll = useCallback(async (table: string) => {
@@ -185,19 +202,39 @@ export default function DashboardPage() {
     return Object.values(map).map(s => ({ ...s, orderCount: s.orders.size })).sort((a, b) => b.revenue - a.revenue);
   }, [completedSales]);
 
-  /* top iSKU — only Completed + Shipped */
+  /* top 20 iSKU — only Completed + Shipped, with sorting */
   const skuPerf = useMemo(() => {
     const map: Record<string, { sku: string; name: string; revenue: number; units: number; orders: Set<string> }> = {};
     completedSales.forEach(r => {
-      if (!map[r.sku]) map[r.sku] = { sku: r.sku, name: r.product_name, revenue: 0, units: 0, orders: new Set() };
-      map[r.sku].revenue += Number(r.revenue);
-      map[r.sku].units += Number(r.units_sold);
-      if (r.order_id != null) map[r.sku].orders.add(String(r.order_id));
+      const nsku = normalizeSku(r.sku);
+      if (!map[nsku]) map[nsku] = { sku: nsku, name: r.product_name, revenue: 0, units: 0, orders: new Set() };
+      map[nsku].revenue += Number(r.revenue);
+      map[nsku].units += Number(r.units_sold);
+      if (r.order_id != null) map[nsku].orders.add(String(r.order_id));
     });
-    return Object.values(map).map(s => ({ ...s, orderCount: s.orders.size })).sort((a, b) => b.revenue - a.revenue).slice(0, 20);
-  }, [completedSales]);
+    const arr = Object.values(map).map(s => ({ ...s, orderCount: s.orders.size }));
+    /* sort by selected key */
+    arr.sort((a, b) => {
+      const av = a[skuSortKey];
+      const bv = b[skuSortKey];
+      return skuSortDir === "asc" ? Number(av) - Number(bv) : Number(bv) - Number(av);
+    });
+    return arr.slice(0, 20);
+  }, [completedSales, skuSortKey, skuSortDir]);
 
   const fmt = (n: number) => "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const SkuSortHeader = ({ label, field }: { label: string; field: SkuSortKey }) => (
+    <th
+      className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase cursor-pointer hover:text-gray-700 select-none bg-gray-50"
+      onClick={() => handleSkuSort(field)}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        <ArrowUpDown size={12} className={skuSortKey === field ? "text-blue-600" : "text-gray-300"} />
+      </div>
+    </th>
+  );
 
   if (loading) {
     return (
@@ -342,21 +379,25 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Top iSKU Performance */}
+      {/* Top 20 iSKU Performance — sortable */}
       <div className="bg-white rounded-xl border overflow-hidden">
-        <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Top iSKU Performance (Completed &amp; Shipped)</h3></div>
+        <div className="p-4 border-b"><h3 className="text-sm font-semibold text-gray-700">Top 20 iSKU Performance (Completed &amp; Shipped)</h3></div>
         <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
           <table className="w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10">
               <tr>
-                {["iSKU", "Product Name", "Revenue", "Units Sold", "Orders"].map(h => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase bg-gray-50">{h}</th>
-                ))}
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase bg-gray-50">#</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase bg-gray-50">iSKU</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase bg-gray-50">Product Name</th>
+                <SkuSortHeader label="Revenue" field="revenue" />
+                <SkuSortHeader label="Units Sold" field="units" />
+                <SkuSortHeader label="Orders" field="orderCount" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {skuPerf.map(s => (
+              {skuPerf.map((s, i) => (
                 <tr key={s.sku} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 text-xs text-gray-400">{i + 1}</td>
                   <td className="px-4 py-3 text-sm font-mono font-medium text-gray-900">{s.sku}</td>
                   <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate">{s.name}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{fmt(s.revenue)}</td>

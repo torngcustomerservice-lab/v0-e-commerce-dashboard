@@ -224,6 +224,8 @@ export default function SkuMasterPage() {
                       ? "text-blue-700 bg-blue-50"
                       : marginVal > 0
                       ? "text-yellow-700 bg-yellow-50"
+                      : marginVal < 0
+                      ? "text-red-700 bg-red-50"
                       : "text-gray-400 bg-gray-50";
                   return (
                     <tr key={sku.id} className="hover:bg-gray-50 transition-colors">
@@ -245,7 +247,7 @@ export default function SkuMasterPage() {
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{Number(sku.selling_price) > 0 ? `RM ${fmt(Number(sku.selling_price))}` : "—"}</td>
                       <td className="px-4 py-3 text-sm text-right">
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${marginColor}`}>
-                          {marginVal > 0 ? `${fmt(marginVal)}%` : "—"}
+                          {marginVal !== 0 ? `${fmt(marginVal)}%` : "—"}
                         </span>
                       </td>
                     </tr>
